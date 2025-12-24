@@ -329,6 +329,25 @@ public class ApiClient
             return false;
         }
     }
+
+    /// <summary>
+    /// Registers a Telegram User ID for notifications (called automatically when user interacts with bot)
+    /// </summary>
+    /// <param name="telegramUserId">Telegram User ID</param>
+    /// <returns>True if registered successfully</returns>
+    public async Task<bool> RegisterTelegramUserAsync(long telegramUserId)
+    {
+        try
+        {
+            var response = await _httpClient.PostAsync($"/api/Telegram/register/{telegramUserId}", null);
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error registering Telegram user {telegramUserId}");
+            return false;
+        }
+    }
 }
 
 public class StatisticsDto

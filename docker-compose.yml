@@ -1,0 +1,9 @@
+services:
+  telegrambot:
+    image: bebochka-telegrambot:latest
+    container_name: bebochka-telegrambot
+    environment:
+      - Api__BaseUrl=${API_BASE_URL}
+      - TelegramBot__Token=${TELEGRAM_BOT_TOKEN}
+    restart: unless-stopped
+

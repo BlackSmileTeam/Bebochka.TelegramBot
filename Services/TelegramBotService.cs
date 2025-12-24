@@ -92,7 +92,21 @@ public class TelegramBotService
         var chatId = message.Chat.Id;
         var userId = message.From?.Id ?? 0;
 
+        if (userId == 0)
+            return;
+
         _logger.LogInformation($"Received message from {userId}: {messageText}");
+
+        // Automatically register Telegram user for notifications
+        try
+        {
+            await _apiClient.RegisterTelegramUserAsync(userId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, $"Failed to register Telegram user {userId}");
+            // Continue execution even if registration fails
+        }
 
         // Check if user is admin via API
         var isAdmin = await _apiClient.IsAdminAsync(userId);
@@ -204,6 +218,17 @@ public class TelegramBotService
         var data = callbackQuery.Data ?? "";
 
         _logger.LogInformation($"Received callback query: {data}");
+
+        // Automatically register Telegram user for notifications
+        try
+        {
+            await _apiClient.RegisterTelegramUserAsync(userId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, $"Failed to register Telegram user {userId}");
+            // Continue execution even if registration fails
+        }
 
         // Answer callback query
         await _botClient.AnswerCallbackQueryAsync(
