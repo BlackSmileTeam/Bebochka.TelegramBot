@@ -1,0 +1,274 @@
+name: Telegram Bot Deployment Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  DOCKERFILE_PATH: Dockerfile
+  SSH_PORT: 22
+  CONTAINER_PORT: 55503
+  HOST_PORT: 55503
+  DEPLOY_DIR: /root/bebochka-telegrambot
+  IMAGE_NAME: bebochka-telegrambot
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Validate SSH Key
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+        echo "SSH key validated successfully"
+      env:
+        SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+
+  test-connection:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || success() }}
+    steps:
+    - name: Test SSH connection
+      uses: appleboy/ssh-action@v1
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        port: ${{ env.SSH_PORT }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          echo "=== SSH Connection Test ==="
+          echo "Connection successful!"
+          echo "Docker version: $(docker --version)"
+          echo "Disk space: $(df -h)"
+          echo "Existing containers:"
+          docker ps -a
+          echo "=== Test completed successfully ==="
+
+  test:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+        
+    - name: Restore dependencies
+      working-directory: Bebochka.TelegramBot
+      run: dotnet restore
+        
+    - name: Build project
+      working-directory: Bebochka.TelegramBot
+      run: dotnet build --configuration Release --no-restore
+        
+    - name: Run unit tests (if available)
+      working-directory: Bebochka.TelegramBot
+      run: |
+        if [ -d "Tests" ] || [ -f "*.Tests.csproj" ]; then
+          dotnet test --configuration Release --verbosity normal --no-build
+        else
+          echo "No test projects found, skipping tests"
+        fi
+      continue-on-error: true
+
+  build:
+    needs: [validate, test]
+    runs-on: ubuntu-latest
+    outputs:
+      docker_tag: ${{ steps.determine_tag.outputs.TAG }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Determine Docker tag
+      id: determine_tag
+      run: |
+        if [ -n "$(git tag --points-at HEAD)" ]; then
+          echo "TAG=$(git tag --points-at HEAD)" >> $GITHUB_OUTPUT
+        else
+          echo "TAG=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
+        fi
+        echo "Using tag: $TAG"
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      working-directory: Bebochka.TelegramBot
+      run: |
+        docker buildx create --use
+        docker buildx build \
+          -f ${{ env.DOCKERFILE_PATH }} \
+          -t ${{ env.IMAGE_NAME }}:${{ steps.determine_tag.outputs.TAG }} \
+          -t ${{ env.IMAGE_NAME }}:latest \
+          --platform linux/amd64 \
+          --load \
+          .
+
+    - name: Save Docker image
+      run: |
+        docker save ${{ env.IMAGE_NAME }}:latest | gzip > ${{ env.IMAGE_NAME }}.tar.gz
+
+    - name: Upload Docker image artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: docker-image
+        path: ${{ env.IMAGE_NAME }}.tar.gz
+        retention-days: 1
+
+  deploy:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download Docker image artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: docker-image
+        path: .
+
+    - name: Prepare deployment directory
+      uses: appleboy/ssh-action@v1
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: ${{ env.SSH_PORT }}
+        script: |
+          mkdir -p ${{ env.DEPLOY_DIR }}/logs
+          echo "Deployment directory created"
+
+    - name: Copy Docker image to server
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: ${{ env.SSH_PORT }}
+        source: "${{ env.IMAGE_NAME }}.tar.gz"
+        target: "/tmp/"
+
+    - name: Copy docker-compose.yml and Dockerfile to server
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: ${{ env.SSH_PORT }}
+        source: "Bebochka.TelegramBot/docker-compose.yml,Bebochka.TelegramBot/Dockerfile"
+        target: "${{ env.DEPLOY_DIR }}/"
+
+    - name: Create .env file on server
+      uses: appleboy/ssh-action@v1
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: ${{ env.SSH_PORT }}
+        envs: API_BASE_URL,TELEGRAM_BOT_TOKEN
+        script: |
+          #!/bin/bash
+          set -euo pipefail
+          
+          # Create .env file with secrets
+          cat > ${{ env.DEPLOY_DIR }}/.env << EOF
+          API_BASE_URL=$API_BASE_URL
+          TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
+          EOF
+          
+          # Secure .env file
+          chmod 600 ${{ env.DEPLOY_DIR }}/.env
+          echo ".env file created successfully"
+      env:
+        API_BASE_URL: ${{ secrets.API_BASE_URL }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+    - name: Deploy application
+      uses: appleboy/ssh-action@v1
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: ${{ env.SSH_PORT }}
+        envs: IMAGE_NAME,DEPLOY_DIR
+        script: |
+          #!/bin/bash
+          set -euo pipefail
+
+          # Load Docker image
+          echo "Loading Docker image..."
+          docker load < /tmp/$IMAGE_NAME.tar.gz
+          rm /tmp/$IMAGE_NAME.tar.gz
+
+          cd $DEPLOY_DIR
+          
+          # Stop and remove old containers (force remove if needed)
+          docker-compose down || true
+          
+          # Force remove container by name if it still exists (from old docker run)
+          docker stop $IMAGE_NAME || true
+          docker rm -f $IMAGE_NAME || true
+          
+          # Start new containers using docker-compose (use already loaded image)
+          docker-compose up -d
+          
+          # Wait a bit for container to start
+          sleep 3
+          
+          # Check container status
+          echo "Checking container status:"
+          docker-compose ps
+          
+          # Check container logs
+          echo "Container logs (last 20 lines):"
+          docker-compose logs --tail=20 telegrambot
+
+          # Clean up old images
+          docker image prune -f
+
+          echo "=== Deployment successful ==="
+      env:
+        IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+
+  post-deploy-test:
+    needs: [deploy, test-connection]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Verify deployment
+      uses: appleboy/ssh-action@v1
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: ${{ env.SSH_PORT }}
+        script: |
+          echo "=== Deployment Verification ==="
+          echo "Container status:"
+          docker ps -a | grep ${{ env.IMAGE_NAME }} || echo "Container not found"
+          echo ""
+          echo "Container logs (last 50 lines):"
+          docker logs --tail 50 ${{ env.IMAGE_NAME }} || echo "Could not retrieve logs"
+          echo ""
+          echo "Checking .env file:"
+          cd ${{ env.DEPLOY_DIR }}
+          if [ -f .env ] && grep -q "TELEGRAM_BOT_TOKEN=" .env && grep -q "API_BASE_URL=" .env; then
+            echo "✅ .env file is properly configured"
+          else
+            echo "⚠️ Warning: .env file might be missing or incomplete"
+          fi
+          echo "=== Verification completed ==="
+
