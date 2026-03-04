@@ -99,13 +99,19 @@ public class TelegramBotService
 
         _logger.LogInformation($"Received message from {userId}: {messageText}");
 
-        // Бронь по первому сообщению под постом в канале (слова: мне, я, беру, бронь)
+        // Бронь по первому сообщению под постом в канале или в группе обсуждения (слова: мне, я, беру, бронь)
         if (message.ReplyToMessage != null)
         {
             var textLower = messageText.Trim().ToLowerInvariant();
             if (ReserveWords.Any(w => textLower.Contains(w)))
             {
-                var (channelId, messageId) = GetChannelPostFromReply(message.ReplyToMessage);
+                var replyTo = message.ReplyToMessage;
+                var (channelId, messageId) = GetChannelPostFromReply(replyTo);
+
+                _logger.LogInformation(
+                    "Reserve check: ChatType={ChatType}, ChatId={ChatId}, ReplyToMessageId={ReplyToMsgId}, ReplyToMessage.ChatId={ReplyChatId}, ReplyToMessage.SenderChat={SenderChatId}, Resolved ChannelId={ResolvedChannelId}, MessageId={ResolvedMessageId}",
+                    message.Chat.Type, message.Chat.Id, replyTo.MessageId, replyTo.Chat?.Id, replyTo.SenderChat?.Id, channelId ?? "(null)", messageId?.ToString() ?? "(null)");
+
                 if (channelId != null && messageId != null)
                 {
                     _logger.LogInformation("Reserve attempt: reply under post ChannelId={ChannelId}, MessageId={MessageId}, UserId={UserId}", channelId, messageId.Value, userId);
@@ -153,6 +159,10 @@ public class TelegramBotService
                         }
                         return;
                     }
+                }
+                else
+                {
+                    LogReplyToMessageStructure(replyTo);
                 }
             }
         }
@@ -436,26 +446,55 @@ public class TelegramBotService
     }
 
     /// <summary>
-    /// Пытается получить (channelId, messageId) из данных о пересылке (ForwardOrigin или ForwardFromChat/ForwardFromMessageId).
+    /// Пытается получить (channelId, messageId) из данных о пересылке (ForwardOrigin или ForwardFromChat/ForwardFromMessageId)
+    /// или из SenderChat (сообщение «от канала» в группе обсуждения).
     /// </summary>
     private static (string? channelId, int? messageId) TryGetForwardOriginChannel(Message message)
     {
         if (message == null) return (null, null);
         var type = message.GetType();
+
         // ForwardOrigin (Bot API 7.0+): MessageOriginChannel с Chat и MessageId
         var forwardOriginProp = type.GetProperty("ForwardOrigin");
-        if (forwardOriginProp?.GetValue(message) is { } origin && origin.GetType().GetProperty("Chat")?.GetValue(origin) is Chat originChat)
+        if (forwardOriginProp?.GetValue(message) is { } origin)
         {
-            var msgIdProp = origin.GetType().GetProperty("MessageId");
-            if (msgIdProp?.GetValue(origin) is int msgId)
+            var originType = origin.GetType();
+            var chatProp = originType.GetProperty("Chat");
+            var msgIdProp = originType.GetProperty("MessageId");
+            if (chatProp?.GetValue(origin) is Chat originChat && msgIdProp?.GetValue(origin) is int msgId)
                 return (originChat.Id.ToString(), msgId);
         }
+
         // Устаревшие поля: ForwardFromChat, ForwardFromMessageId
         var forwardFromChatProp = type.GetProperty("ForwardFromChat");
         var forwardFromMessageIdProp = type.GetProperty("ForwardFromMessageId");
         if (forwardFromChatProp?.GetValue(message) is Chat fromChat && forwardFromMessageIdProp?.GetValue(message) is int fromMsgId)
             return (fromChat.Id.ToString(), fromMsgId);
+
+        // Группа обсуждения: сообщение может быть «от канала» (SenderChat = канал), но message_id поста в канале только в forward
+        var senderChatProp = type.GetProperty("SenderChat");
+        if (senderChatProp?.GetValue(message) is Chat senderChat && senderChat.Type == ChatType.Channel)
+        {
+            var channelIdStr = senderChat.Id.ToString();
+            // message_id в канале по-прежнему нужен; пробуем только forward_from_message_id
+            if (forwardFromMessageIdProp?.GetValue(message) is int fwdMsgId)
+                return (channelIdStr, fwdMsgId);
+            // Без message_id в канале заказ не создать — не возвращаем только channelId
+        }
+
         return (null, null);
+    }
+
+    private void LogReplyToMessageStructure(Message replyTo)
+    {
+        if (replyTo == null) return;
+        var t = replyTo.GetType();
+        var fo = t.GetProperty("ForwardOrigin")?.GetValue(replyTo);
+        var ffc = t.GetProperty("ForwardFromChat")?.GetValue(replyTo);
+        var ffmi = t.GetProperty("ForwardFromMessageId")?.GetValue(replyTo);
+        _logger.LogWarning(
+            "Reserve skipped: could not resolve channel post from reply. Ensure: 1) Bot is in the discussion group, 2) User replied via Comment to the channel post. ReplyToMessage: ForwardOrigin={FO}, ForwardFromChat={FFC}, ForwardFromMessageId={FFMI}, SenderChat={SenderChat}",
+            fo?.GetType().Name ?? "null", ffc is Chat fc ? fc.Id.ToString() : "null", ffmi?.ToString() ?? "null", replyTo.SenderChat?.Id.ToString() ?? "null");
     }
 
     private Task HandlePollingErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
