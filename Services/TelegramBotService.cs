@@ -184,11 +184,7 @@ public class TelegramBotService
                             _logger.LogWarning("Reserve failed: ChannelId={ChannelId}, MessageId={MessageId}, Reason={Reason}", channelId, messageId.Value, result.Reason ?? "unknown");
                         if (result.Success && result.Order != null)
                         {
-                            await _botClient.SendTextMessageAsync(
-                                chatId,
-                                $"✅ Вы забронировали товар! Заказ №{result.Order.OrderNumber}, сумма {result.Order.TotalAmount:N0} ₽. Статус: Ожидает оплаты. Напишите боту в личку для оформления.",
-                                replyToMessageId: message.MessageId,
-                                cancellationToken: cancellationToken);
+                            // Успешная бронь — в комментариях не пишем сообщение пользователю
                         }
                         else
                         {
