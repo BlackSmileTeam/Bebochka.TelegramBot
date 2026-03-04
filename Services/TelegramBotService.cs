@@ -170,13 +170,15 @@ public class TelegramBotService
                     }
                     catch { /* ignore */ }
 
+                    var phone = message.Contact?.PhoneNumber;
                     var result = await _apiClient.ReserveFromTelegramAsync(
                         channelId,
                         messageId.Value,
                         userId,
                         message.From?.Username,
                         message.From?.FirstName,
-                        message.From?.LastName);
+                        message.From?.LastName,
+                        customerPhone: phone);
 
                     if (result != null)
                     {
