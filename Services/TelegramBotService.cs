@@ -171,6 +171,8 @@ public class TelegramBotService
                     catch { /* ignore */ }
 
                     var phone = message.Contact?.PhoneNumber;
+                    var commentChatId = message.Chat?.Id;
+                    var commentMessageId = message.MessageId;
                     var result = await _apiClient.ReserveFromTelegramAsync(
                         channelId,
                         messageId.Value,
@@ -178,32 +180,15 @@ public class TelegramBotService
                         message.From?.Username,
                         message.From?.FirstName,
                         message.From?.LastName,
-                        customerPhone: phone);
+                        customerPhone: phone,
+                        commentChatId: commentChatId,
+                        commentMessageId: commentMessageId);
 
                     if (result != null)
                     {
                         if (!result.Success)
                             _logger.LogWarning("Reserve failed: ChannelId={ChannelId}, MessageId={MessageId}, Reason={Reason}", channelId, messageId.Value, result.Reason ?? "unknown");
-                        if (result.Success && result.Order != null)
-                        {
-                            // Успешная бронь — в комментариях не пишем сообщение пользователю
-                        }
-                        else
-                        {
-                            var reasonText = result.Reason switch
-                            {
-                                "AlreadyReserved" => "Этот товар уже забронирован.",
-                                "UserNotFound" => "Напишите боту в личку /start, затем снова напишите «беру» под постом.",
-                                "ProductNotFound" => "Этот пост не привязан к товару.",
-                                "OutOfStock" => "Товар закончился.",
-                                _ => "Не удалось забронировать."
-                            };
-                            await _botClient.SendTextMessageAsync(
-                                chatId,
-                                $"❌ {reasonText}",
-                                replyToMessageId: message.MessageId,
-                                cancellationToken: cancellationToken);
-                        }
+                        // В ответ на кодовую фразу в чате ничего не пишем (ни при успехе, ни при неудаче)
                         return;
                     }
                 }

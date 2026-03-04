@@ -352,7 +352,7 @@ public class ApiClient
     /// <summary>
     /// Reserves a product from channel post (first comment with "мне"/"я"/"беру"/"бронь").
     /// </summary>
-    public async Task<ReserveFromTelegramResultDto?> ReserveFromTelegramAsync(string channelId, int messageId, long telegramUserId, string? username, string? firstName, string? lastName, string? customerPhone = null)
+    public async Task<ReserveFromTelegramResultDto?> ReserveFromTelegramAsync(string channelId, int messageId, long telegramUserId, string? username, string? firstName, string? lastName, string? customerPhone = null, long? commentChatId = null, int? commentMessageId = null)
     {
         try
         {
@@ -364,7 +364,9 @@ public class ApiClient
                 Username = username,
                 FirstName = firstName,
                 LastName = lastName,
-                CustomerPhone = customerPhone
+                CustomerPhone = customerPhone,
+                CommentChatId = commentChatId,
+                CommentMessageId = commentMessageId
             };
             var response = await _httpClient.PostAsJsonAsync("/api/Orders/reserve-from-telegram", body);
             response.EnsureSuccessStatusCode();
