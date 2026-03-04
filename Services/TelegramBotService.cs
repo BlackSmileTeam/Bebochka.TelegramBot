@@ -71,8 +71,57 @@ public class TelegramBotService
     {
         try
         {
+            // Логируем каждый входящий апдейт. Комментарии по кнопке «Прокомментировать» приходят как Message из группы обсуждения (не как ChannelPost).
+            long logChatId = 0;
+            var logChatType = "?";
+            var logText = "(no text)";
+            string updateKind;
+
+            if (update.Message != null)
+            {
+                updateKind = "Message";
+                logChatId = update.Message.Chat.Id;
+                logChatType = update.Message.Chat.Type.ToString();
+                logText = update.Message.Text ?? "(no text)";
+            }
+            else if (update.CallbackQuery != null)
+            {
+                updateKind = "CallbackQuery";
+                logChatId = update.CallbackQuery.Message?.Chat?.Id ?? 0;
+                logChatType = update.CallbackQuery.Message?.Chat?.Type.ToString() ?? "?";
+                logText = update.CallbackQuery.Data ?? "(no data)";
+            }
+            else if (update.ChannelPost != null)
+            {
+                updateKind = "ChannelPost";
+                logChatId = update.ChannelPost.Chat.Id;
+                logChatType = update.ChannelPost.Chat.Type.ToString();
+                logText = update.ChannelPost.Text ?? update.ChannelPost.Caption ?? "(post in channel)";
+                _logger.LogInformation("Update received: Id={UpdateId}, Kind={Kind}, ChatId={ChatId}. Это пост в канале. Комментарии «беру» приходят из группы обсуждения как Message — добавьте бота в группу обсуждения.",
+                    update.Id, updateKind, logChatId);
+            }
+            else if (update.EditedChannelPost != null)
+            {
+                updateKind = "EditedChannelPost";
+                logChatId = update.EditedChannelPost.Chat.Id;
+                logChatType = update.EditedChannelPost.Chat.Type.ToString();
+                logText = update.EditedChannelPost.Text ?? "(edited post)";
+            }
+            else
+            {
+                updateKind = "Other";
+            }
+
+            if (updateKind != "ChannelPost")
+            {
+                _logger.LogInformation("Update received: Id={UpdateId}, Kind={Kind}, ChatId={ChatId}, ChatType={ChatType}, Text={Text}",
+                    update.Id, updateKind, logChatId, logChatType, logText);
+            }
+
             if (update.Message is { } message)
             {
+                if (message.Chat.Type is ChatType.Supergroup or ChatType.Group)
+                    _logger.LogInformation("Сообщение из группы (ChatId={ChatId}). Если это группа обсуждения канала — ответы «беру» здесь будут обрабатываться.", message.Chat.Id);
                 await HandleMessageAsync(message, cancellationToken);
             }
             else if (update.CallbackQuery is { } callbackQuery)

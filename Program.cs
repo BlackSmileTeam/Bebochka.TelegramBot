@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Bebochka.TelegramBot.Services;
@@ -68,6 +68,16 @@ try
     await botService.StartAsync();
 
     logger.LogInformation("Telegram Bot started successfully. Press Ctrl+C to stop.");
+
+    var discussionGroupChatId = configuration["TelegramBot:DiscussionGroupChatId"];
+    if (string.IsNullOrWhiteSpace(discussionGroupChatId))
+    {
+        logger.LogInformation("TelegramBot:DiscussionGroupChatId не задан. Чтобы бот получал комментарии «беру» из обсуждения канала: 1) Добавьте бота в группу обсуждения (Управление группой → Добавить участников → @bebochkakids_bot). 2) При первом сообщении из группы в логах появится ChatId — при желании укажите его в appsettings.json как DiscussionGroupChatId.");
+    }
+    else
+    {
+        logger.LogInformation("Группа обсуждения настроена: DiscussionGroupChatId={ChatId}", discussionGroupChatId);
+    }
 
     // Keep the application running
     await Task.Delay(Timeout.Infinite);
