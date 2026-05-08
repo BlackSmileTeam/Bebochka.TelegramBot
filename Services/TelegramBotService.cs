@@ -137,21 +137,87 @@ public class TelegramBotService
 
     private async Task HandleMessageAsync(Message message, CancellationToken cancellationToken)
     {
-        if (message.Text is not { } messageText)
-            return;
-
         var chatId = message.Chat.Id;
         var userId = message.From?.Id ?? 0;
-
         if (userId == 0)
             return;
 
-        _logger.LogInformation($"Received message from {userId}: {messageText}");
+        var messageText = message.Text ?? message.Caption;
+        var entities = message.Entities ?? message.CaptionEntities;
+
+        // Если в сообщении есть кастомные эмодзи — определяем их id и отвечаем теми же эмодзи
+        if (entities != null)
+        {
+            var customEmojiEntities = entities
+                .Where(e => e.Type == MessageEntityType.CustomEmoji)
+                .OrderByDescending(e => e.Offset)
+                .ToList();
+            if (customEmojiEntities.Count > 0)
+            {
+                foreach (var e in customEmojiEntities)
+                {
+                    _logger.LogInformation("Custom emoji from user {UserId}: CustomEmojiId={CustomEmojiId}, Offset={Offset}, Length={Length}",
+                        userId, e.CustomEmojiId, e.Offset, e.Length);
+                }
+                // Текст может быть пустым, если клиент отправил только эмодзи; тогда берём символ из сущности или placeholder
+                var sourceText = messageText ?? "";
+                var reply = sourceText;
+                foreach (var e in customEmojiEntities)
+                {
+                    if (e.Offset + e.Length <= reply.Length)
+                    {
+                        var segment = reply.Substring(e.Offset, e.Length);
+                        var tag = $"<tg-emoji emoji-id=\"{e.CustomEmojiId}\">{segment}</tg-emoji>";
+                        reply = reply.Substring(0, e.Offset) + tag + reply.Substring(e.Offset + e.Length);
+                    }
+                    else
+                    {
+                        // Текста нет или короткий — отвечаем одним тегом с placeholder (🤩), Telegram подставит кастомный эмодзи по id
+                        var fallbackChar = "🤩";
+                        var tag = $"<tg-emoji emoji-id=\"{e.CustomEmojiId}\">{fallbackChar}</tg-emoji>";
+                        reply = string.IsNullOrEmpty(reply) ? tag : reply + " " + tag;
+                    }
+                }
+                try
+                {
+                    _logger.LogInformation("Sending custom emoji reply to ChatId={ChatId}, ReplyLength={Length}, Preview={Preview}",
+                        chatId, reply?.Length ?? 0, reply != null && reply.Length > 80 ? reply.Substring(0, 80) + "..." : reply);
+                    var sent = await _botClient.SendTextMessageAsync(
+                        chatId,
+                        reply,
+                        parseMode: ParseMode.Html,
+                        replyToMessageId: message.MessageId,
+                        cancellationToken: cancellationToken);
+                    _logger.LogInformation("Custom emoji reply sent to ChatId={ChatId}, MessageId={MessageId}", chatId, sent?.MessageId ?? 0);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to send custom emoji reply to ChatId={ChatId}. Reply (preview): {ReplyPreview}",
+                        chatId, reply?.Length > 100 ? reply.Substring(0, 100) + "..." : reply);
+                    // В группах кастомные эмодзи от бота могут быть запрещены (нужен Premium и т.д.) — отправляем текстовый ответ с id
+                    try
+                    {
+                        var fallbackText = "Эмодзи получен. ID: " + string.Join(", ", customEmojiEntities.Select(e => e.CustomEmojiId));
+                        await _botClient.SendTextMessageAsync(chatId, fallbackText, replyToMessageId: message.MessageId, cancellationToken: cancellationToken);
+                    }
+                    catch (Exception fallbackEx)
+                    {
+                        _logger.LogError(fallbackEx, "Fallback text reply also failed for ChatId={ChatId}", chatId);
+                    }
+                }
+                return;
+            }
+        }
+
+        if (messageText is not { } text)
+            return;
+
+        _logger.LogInformation($"Received message from {userId}: {text}");
 
         // Бронь по первому сообщению под постом в канале или в группе обсуждения (слова: мне, я, беру, бронь)
         if (message.ReplyToMessage != null)
         {
-            var textLower = messageText.Trim().ToLowerInvariant();
+            var textLower = text.Trim().ToLowerInvariant();
             if (ReserveWords.Any(w => textLower.Contains(w)))
             {
                 var replyTo = message.ReplyToMessage;
@@ -214,9 +280,9 @@ public class TelegramBotService
         var isAdmin = await _apiClient.IsAdminAsync(userId);
 
         // Handle commands (starting with /)
-        if (messageText.StartsWith("/"))
+        if (text.StartsWith("/"))
         {
-            var command = messageText.Split(' ')[0].ToLower();
+            var command = text.Split(' ')[0].ToLower();
             switch (command)
             {
                 case "/start":
@@ -267,8 +333,8 @@ public class TelegramBotService
         else
         {
             // Handle button text messages (keyboard buttons)
-            var text = messageText.Trim();
-            if (text.Contains("Каталог") || text.Contains("📦"))
+            var buttonText = text.Trim();
+            if (buttonText.Contains("Каталог") || buttonText.Contains("📦"))
             {
                 // Удаляем сообщение команды
                 try
@@ -281,15 +347,15 @@ public class TelegramBotService
                 }
                 await _catalogHandler.ShowCatalogAsync(chatId, cancellationToken);
             }
-            else if (text.Contains("Корзина") || text.Contains("🛒"))
+            else if (buttonText.Contains("Корзина") || buttonText.Contains("🛒"))
             {
                 await _cartHandler.ShowCartAsync(chatId, cancellationToken);
             }
-            else if (text.Contains("Заказы") || text.Contains("📋"))
+            else if (buttonText.Contains("Заказы") || buttonText.Contains("📋"))
             {
                 await _orderHandler.ShowOrdersAsync(chatId, userId, cancellationToken);
             }
-            else if (text.Contains("Админ") || text.Contains("👨‍💼"))
+            else if (buttonText.Contains("Админ") || buttonText.Contains("👨‍💼"))
             {
                 if (isAdmin)
                 {
